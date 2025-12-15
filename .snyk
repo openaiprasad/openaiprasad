@@ -1,0 +1,15 @@
+# Snyk configuration file
+version: v1.0.0
+
+# Language settings
+language-settings:
+  java:
+    excludeTestDependencies: true
+
+# Exclude paths
+exclude:
+  - 'test/**'
+  - 'tests/**'
+  - 'docs/**'
+  - '**/*.md'
+  - 'scripts/**'

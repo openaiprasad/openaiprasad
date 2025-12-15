@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+    
+    <!-- Suppress test dependencies -->
+    <suppress>
+        <notes><![CDATA[
+        Test dependencies are not deployed to production
+        ]]></notes>
+        <gav regex="true">.*:.*:.*:test</gav>
+        <cve>CVE-.*</cve>
+    </suppress>
+    
+    <!-- Suppress development tools -->
+    <suppress>
+        <notes><![CDATA[
+        Development tools are not part of runtime
+        ]]></notes>
+        <gav regex="true">org\.springframework\.boot:spring-boot-maven-plugin:.*</gav>
+        <cve>CVE-.*</cve>
+    </suppress>
+    
+</suppressions>

@@ -1,0 +1,25 @@
+# Trivy ignore file for security scanning
+# Add CVE IDs or file patterns to ignore
+
+# Ignore test files
+**/test/**
+**/tests/**
+**/*test*
+**/*Test*
+
+# Ignore documentation
+**/docs/**
+**/*.md
+**/*.txt
+
+# Ignore build artifacts
+**/target/**
+**/build/**
+**/dist/**
+**/node_modules/**
+
+# Ignore configuration files
+**/.github/**
+**/scripts/**
+**/*.yml
+**/*.yaml

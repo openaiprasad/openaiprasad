@@ -1,0 +1,227 @@
+name: Security Scanning and Remediation
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+  workflow_dispatch:
+
+env:
+  SECURITY_SCAN_VERSION: '1.0'
+
+jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      has-code-changes: ${{ steps.changes.outputs.code }}
+      has-deps-changes: ${{ steps.changes.outputs.deps }}
+      project-type: ${{ steps.detect.outputs.project-type }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect project type
+        id: detect
+        run: |
+          PROJECT_TYPE="java"
+          echo "project-type=$PROJECT_TYPE" >> $GITHUB_OUTPUT
+          echo "Detected project type: $PROJECT_TYPE"
+
+      - name: Detect changes
+        id: changes
+        uses: dorny/paths-filter@v2
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'lib/**'
+              - '**/*.py'
+              - '**/*.js'
+              - '**/*.java'
+              - '**/*.go'
+              - '**/*.cs'
+            deps:
+              - 'pom.xml'
+              - 'package.json'
+              - 'requirements.txt'
+              - 'go.mod'
+              - '*.csproj'
+              - 'Gemfile'
+              - 'composer.json'
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    
+    strategy:
+      matrix:
+        scanner: [trivy, snyk, owasp]
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Project Environment
+        uses: ./.github/actions/setup-${{ needs.detect-changes.outputs.project-type }}
+        if: hashFiles('.github/actions/setup-${{ needs.detect-changes.outputs.project-type }}/action.yml') != ''
+
+      - name: Run Trivy Scanner
+        if: matrix.scanner == 'trivy'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'security-results.sarif'
+
+      - name: Run Snyk Scanner
+        if: matrix.scanner == 'snyk'
+        uses: snyk/actions/setup@master
+
+      - name: Snyk Scan
+        if: matrix.scanner == 'snyk'
+        run: |
+          snyk test --json-file-output=security-results.json || true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Setup Java
+        if: matrix.scanner == 'owasp'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Run OWASP Dependency Check
+        if: matrix.scanner == 'owasp'
+        run: |
+          mvn org.owasp:dependency-check-maven:check \
+            -DfailBuildOnCVSS=7 \
+            -Dformat=JSON \
+            -DprettyPrint=true
+
+      - name: Upload Security Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-results-${{ matrix.scanner }}
+          path: |
+            security-results.json
+            security-results.sarif
+          retention-days: 30
+
+  generate-report:
+    name: Generate Security Report
+    runs-on: ubuntu-latest
+    needs: [detect-changes, security-scan]
+    if: always()
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download All Results
+        uses: actions/download-artifact@v4
+        with:
+          path: security-results
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Generate Report
+        run: |
+          python scripts/generate-security-report.py \
+            --results-dir security-results \
+            --output security-dashboard.html \
+            --format html \
+            --theme dark
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-dashboard
+          path: |
+            security-dashboard.html
+            security-summary.json
+
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./
+          destination_dir: security-reports
+
+  create-security-prs:
+    name: Create Security PRs
+    runs-on: ubuntu-latest
+    needs: [detect-changes, security-scan]
+    if: github.event_name != 'pull_request'
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Security Results
+        uses: actions/download-artifact@v4
+        with:
+          path: security-results
+
+      - name: Create Security PRs
+        run: |
+          chmod +x scripts/create-security-pr.sh
+          ./scripts/create-security-pr.sh --type all --scan-dir security-results
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [security-scan, generate-report]
+    if: always()
+    
+    steps:
+      - name: Send Slack Notification
+        if: ${{ secrets.SLACK_WEBHOOK_URL }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              "text": "Security Scan Completed",
+              "attachments": [
+                {
+                  "color": "${{ needs.security-scan.result == 'success' && 'good' || 'danger' }}",
+                  "fields": [
+                    {
+                      "title": "Repository",
+                      "value": "${{ github.repository }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Status",
+                      "value": "${{ needs.security-scan.result }}",
+                      "short": true
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
