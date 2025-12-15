@@ -573,28 +573,34 @@ EOF
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "Would create .snyk"
     else
-        cat > .snyk << EOF
+        cat > .snyk << 'SNYK_EOF'
 # Snyk configuration file
 version: v1.0.0
 
 # Language settings
 language-settings:
-$(if [[ "$project_type" == "java" ]]; then
-cat << 'EOF'
+SNYK_EOF
+        
+        # Add language-specific settings
+        if [[ "$project_type" == "java" ]]; then
+            cat >> .snyk << 'JAVA_EOF'
   java:
     excludeTestDependencies: true
-EOF
-elif [[ "$project_type" == "python" ]]; then
-cat << 'EOF'
+JAVA_EOF
+        elif [[ "$project_type" == "python" ]]; then
+            cat >> .snyk << 'PYTHON_EOF'
   python:
     excludeTestDependencies: true
-EOF
-elif [[ "$project_type" == "nodejs" ]]; then
-cat << 'EOF'
+PYTHON_EOF
+        elif [[ "$project_type" == "nodejs" ]]; then
+            cat >> .snyk << 'NODEJS_EOF'
   javascript:
     excludeDevDependencies: true
-EOF
-fi)
+NODEJS_EOF
+        fi
+        
+        # Add common exclude paths
+        cat >> .snyk << 'EXCLUDE_EOF'
 
 # Exclude paths
 exclude:
@@ -603,7 +609,7 @@ exclude:
   - 'docs/**'
   - '**/*.md'
   - 'scripts/**'
-EOF
+EXCLUDE_EOF
         log_config "Created .snyk"
     fi
 
