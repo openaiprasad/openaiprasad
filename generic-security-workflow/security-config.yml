@@ -1,0 +1,300 @@
+# Generic Security Workflow Configuration
+# Version: 1.0
+# Compatible with: Java, Python, Node.js, Go, .NET, and more
+
+version: 1
+
+# Repository Configuration
+repo:
+  owner: auto                    # auto-detect from git remote
+  default_branch: main          # main | master | develop
+  
+# Language Detection and Configuration
+languages: auto                 # auto | [java, python, javascript, go, csharp, ruby, php]
+
+# Security Scanning Configuration
+scans:
+  # Open Source Software Scanning
+  oss:
+    enabled: true
+    tools: 
+      - trivy                   # Universal vulnerability scanner
+      - osv                     # Google OSV database
+      - grype                   # Anchore vulnerability scanner (optional)
+    config:
+      severity_threshold: medium
+      fail_on_critical: true
+      scan_types:
+        - vulnerabilities
+        - secrets
+        - misconfigurations
+        - licenses
+      
+  # Snyk Commercial Scanning
+  snyk:
+    enabled: true
+    modes: 
+      - sca                     # Software Composition Analysis
+      - code                    # Static Code Analysis
+      - container               # Container scanning
+      - iac                     # Infrastructure as Code
+    config:
+      severity_threshold: high
+      monitor: true
+      fail_on_critical: true
+      
+  # Language-Specific Scanners
+  language_specific:
+    python:
+      tools: [pip-audit, safety, bandit]
+      enabled: auto             # auto-enable if Python detected
+    javascript:
+      tools: [npm-audit, yarn-audit, retire.js]
+      enabled: auto
+    java:
+      tools: [owasp-dependency-check, spotbugs]
+      enabled: auto
+    go:
+      tools: [govulncheck, gosec]
+      enabled: auto
+    dotnet:
+      tools: [dotnet-audit, security-code-scan]
+      enabled: auto
+
+# Automated Fix Configuration
+autofix:
+  enabled: true
+  rules:
+    min_severity: high          # Only auto-fix high+ severity issues
+    allow_major_bumps: false    # Prevent breaking changes
+    require_tests: true         # Only apply fixes if tests pass
+    max_files_changed: 20       # Limit scope of changes
+    exclude_patterns:           # Files/paths to exclude from auto-fixing
+      - "*.lock"
+      - "package-lock.json"
+      - "yarn.lock"
+      - "Pipfile.lock"
+      - "go.sum"
+    
+  strategies:
+    dependencies:
+      update_method: patch      # patch | minor | major
+      test_before_commit: true
+      rollback_on_failure: true
+    
+    code_fixes:
+      apply_safe_fixes: true
+      require_manual_review: true
+
+# Pull Request Management
+pull_requests:
+  strategy: per_stage           # per_stage | single | per_tool
+  branch_prefix: security/automated
+  
+  templates:
+    oss_fixes:
+      title: "🔒 Security: OSS vulnerability fixes"
+      labels: [security, automated, dependencies]
+      reviewers: [security-team]
+      assignees: []
+      draft: true
+      
+    snyk_fixes:
+      title: "🔒 Security: Snyk vulnerability fixes"
+      labels: [security, automated, snyk]
+      reviewers: [security-team]
+      assignees: []
+      draft: true
+      
+    code_fixes:
+      title: "🔒 Security: Code vulnerability fixes"
+      labels: [security, automated, code-analysis]
+      reviewers: [security-team, code-owners]
+      assignees: []
+      draft: true
+
+  policies:
+    require_approval: true
+    auto_merge_conditions:
+      - all_checks_pass
+      - approved_by_security_team
+      - no_critical_vulnerabilities
+    
+    branch_protection:
+      enforce_admins: true
+      required_status_checks: [security-scan]
+      dismiss_stale_reviews: true
+
+# Reporting Configuration
+reporting:
+  formats: [html, json, sarif, pdf]
+  theme: dark                   # dark | light | auto
+  
+  dashboard:
+    enabled: true
+    deploy_to_pages: true
+    include_charts: true
+    include_trends: true
+    
+  outputs:
+    security_summary: security-summary.json
+    vulnerability_report: security-report.html
+    sarif_report: security-results.sarif
+    
+  retention:
+    scan_results: 90d
+    reports: 365d
+    artifacts: 30d
+    
+  fail_conditions:
+    critical_unfixed: true
+    high_threshold: 10
+    medium_threshold: 50
+
+# Notification Configuration
+notifications:
+  channels:
+    slack:
+      enabled: true
+      webhook: ${SLACK_WEBHOOK_URL}
+      channels: [security-alerts, dev-team]
+      
+    email:
+      enabled: true
+      smtp_server: ${SMTP_SERVER}
+      recipients: [security@company.com]
+      
+    teams:
+      enabled: false
+      webhook: ${TEAMS_WEBHOOK_URL}
+      
+    github:
+      enabled: true
+      create_issues: true
+      comment_on_prs: true
+      
+  conditions:
+    immediate:
+      - critical_vulnerabilities_found
+      - scan_failed
+      - security_threshold_exceeded
+      
+    daily:
+      - scan_summary
+      - new_vulnerabilities
+      
+    weekly:
+      - security_metrics_report
+      - vulnerability_trends
+
+# Scheduling Configuration
+schedule:
+  full_scan: "0 2 * * *"        # Daily at 2 AM UTC
+  quick_scan: "0 */6 * * *"     # Every 6 hours
+  dependency_check: "0 4 * * 1" # Weekly on Monday at 4 AM
+  
+  triggers:
+    - push: [main, master, develop]
+    - pull_request: [main, master]
+    - schedule: full_scan
+    - workflow_dispatch: true
+
+# Security Policies and Thresholds
+policies:
+  vulnerability_thresholds:
+    critical: 0                 # Fail build on any critical
+    high: 5                     # Allow up to 5 high severity
+    medium: 20                  # Allow up to 20 medium severity
+    low: 100                    # Allow up to 100 low severity
+    
+  license_policies:
+    allowed_licenses:
+      - MIT
+      - Apache-2.0
+      - BSD-3-Clause
+      - ISC
+    
+    forbidden_licenses:
+      - GPL-3.0
+      - AGPL-3.0
+      - SSPL-1.0
+      
+  secret_detection:
+    enabled: true
+    patterns:
+      - api_keys
+      - passwords
+      - tokens
+      - certificates
+      - database_urls
+      
+  compliance:
+    frameworks: [OWASP, NIST, SOC2, PCI-DSS]
+    generate_reports: true
+
+# Tool-Specific Configurations
+tools:
+  trivy:
+    config_file: .trivyignore
+    cache_dir: .trivy-cache
+    timeout: 10m
+    
+  snyk:
+    config_file: .snyk
+    org: ${SNYK_ORG}
+    
+  owasp:
+    suppression_file: owasp-suppressions.xml
+    data_directory: .owasp-data
+    
+  codeql:
+    languages: auto
+    queries: security-and-quality
+
+# Environment Configuration
+environments:
+  development:
+    scan_frequency: on_push
+    auto_fix: true
+    notifications: minimal
+    
+  staging:
+    scan_frequency: daily
+    auto_fix: false
+    notifications: standard
+    
+  production:
+    scan_frequency: continuous
+    auto_fix: false
+    notifications: all
+    fail_on_high: true
+
+# Integration Configuration
+integrations:
+  jira:
+    enabled: false
+    server: ${JIRA_SERVER}
+    project: ${JIRA_PROJECT}
+    create_tickets: true
+    
+  servicenow:
+    enabled: false
+    instance: ${SERVICENOW_INSTANCE}
+    create_incidents: true
+    
+  defectdojo:
+    enabled: false
+    url: ${DEFECTDOJO_URL}
+    engagement_id: ${DEFECTDOJO_ENGAGEMENT}
+
+# Custom Extensions
+extensions:
+  custom_scanners: []
+  custom_reporters: []
+  custom_fixers: []
+  
+  hooks:
+    pre_scan: []
+    post_scan: []
+    pre_fix: []
+    post_fix: []

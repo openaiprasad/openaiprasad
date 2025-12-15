@@ -1,0 +1,189 @@
+name: Node.js Security Scanning
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  security-scan:
+    name: Node.js Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    
+    strategy:
+      matrix:
+        scanner: [trivy, snyk, npm-audit, eslint-security, retire]
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci --only=production
+          npm install --save-dev eslint-plugin-security retire
+
+      - name: Run Trivy Scanner
+        if: matrix.scanner == 'trivy'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Run Snyk Scanner
+        if: matrix.scanner == 'snyk'
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=medium --json-file-output=snyk-results.json
+        continue-on-error: true
+
+      - name: Run npm audit
+        if: matrix.scanner == 'npm-audit'
+        run: |
+          npm audit --audit-level=moderate --json > npm-audit-results.json || true
+
+      - name: Run ESLint Security
+        if: matrix.scanner == 'eslint-security'
+        run: |
+          npx eslint . \
+            --ext .js,.jsx,.ts,.tsx \
+            --config .eslintrc-security.js \
+            --format json \
+            --output-file eslint-security-results.json || true
+
+      - name: Run Retire.js
+        if: matrix.scanner == 'retire'
+        run: |
+          npx retire --outputformat json --outputpath retire-results.json || true
+
+      - name: Upload Security Results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && matrix.scanner == 'trivy'
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Upload Scan Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nodejs-security-results-${{ matrix.scanner }}
+          path: |
+            trivy-results.sarif
+            snyk-results.json
+            npm-audit-results.json
+            eslint-security-results.json
+            retire-results.json
+          retention-days: 30
+
+  generate-report:
+    name: Generate Security Report
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: always()
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download All Results
+        uses: actions/download-artifact@v4
+        with:
+          path: security-results
+
+      - name: Setup Python for reporting
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install report dependencies
+        run: |
+          pip install matplotlib plotly pandas jinja2
+
+      - name: Generate Node.js Security Report
+        run: |
+          python scripts/generate-security-report.py \
+            --project-type nodejs \
+            --results-dir security-results \
+            --output nodejs-security-dashboard.html \
+            --format html \
+            --theme dark
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-security-dashboard
+          path: |
+            nodejs-security-dashboard.html
+            security-summary.json
+
+  create-security-prs:
+    name: Create Node.js Security PRs
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.event_name != 'pull_request'
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Security Results
+        uses: actions/download-artifact@v4
+        with:
+          path: security-results
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Apply Node.js Security Fixes
+        run: |
+          # Update package.json with secure versions
+          if [ -f "package-secure.json" ]; then
+            cp package-secure.json package.json
+          fi
+          
+          # Run npm audit fix
+          npm audit fix --force || true
+          
+          # Update security configurations
+          if [ -f "security-config.js.template" ]; then
+            cp security-config.js.template security-config.js
+          fi
+
+      - name: Create Security PR
+        run: |
+          chmod +x scripts/create-security-pr.sh
+          ./scripts/create-security-pr.sh \
+            --type nodejs \
+            --scan-dir security-results \
+            --reviewers security-team,frontend-team
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,177 @@
+name: Java Security Scanning
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  JAVA_VERSION: '17'
+  MAVEN_OPTS: '-Xmx2048m'
+
+jobs:
+  security-scan:
+    name: Java Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    
+    strategy:
+      matrix:
+        scanner: [trivy, snyk, owasp, spotbugs]
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Cache Maven Dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Run Trivy Scanner
+        if: matrix.scanner == 'trivy'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Run Snyk Scanner
+        if: matrix.scanner == 'snyk'
+        uses: snyk/actions/maven@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=medium --json-file-output=snyk-results.json
+        continue-on-error: true
+
+      - name: Run OWASP Dependency Check
+        if: matrix.scanner == 'owasp'
+        run: |
+          mvn org.owasp:dependency-check-maven:check \
+            -DfailBuildOnCVSS=7 \
+            -DsuppressionFiles=owasp-suppressions.xml \
+            -Dformat=JSON,HTML \
+            -DprettyPrint=true
+
+      - name: Run SpotBugs Security
+        if: matrix.scanner == 'spotbugs'
+        run: |
+          mvn compile spotbugs:check \
+            -Dspotbugs.includeFilterFile=spotbugs-security.xml \
+            -Dspotbugs.effort=Max \
+            -Dspotbugs.threshold=Medium
+
+      - name: Upload Security Results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && matrix.scanner == 'trivy'
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Upload Scan Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: java-security-results-${{ matrix.scanner }}
+          path: |
+            trivy-results.sarif
+            snyk-results.json
+            target/dependency-check-report.*
+            target/spotbugsXml.xml
+          retention-days: 30
+
+  generate-report:
+    name: Generate Security Report
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: always()
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download All Results
+        uses: actions/download-artifact@v4
+        with:
+          path: security-results
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Generate Java Security Report
+        run: |
+          python scripts/generate-security-report.py \
+            --project-type java \
+            --results-dir security-results \
+            --output java-security-dashboard.html \
+            --format html \
+            --theme dark
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-security-dashboard
+          path: |
+            java-security-dashboard.html
+            security-summary.json
+
+  create-security-prs:
+    name: Create Java Security PRs
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.event_name != 'pull_request'
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Security Results
+        uses: actions/download-artifact@v4
+        with:
+          path: security-results
+
+      - name: Apply Java Security Fixes
+        run: |
+          # Update Maven dependencies
+          if [ -f "pom-secure.xml" ]; then
+            cp pom-secure.xml pom.xml
+          fi
+          
+          # Apply security configurations
+          if [ -f "src/main/java/security/SecurityConfig.java.template" ]; then
+            cp src/main/java/security/SecurityConfig.java.template \
+               src/main/java/security/SecurityConfig.java
+          fi
+
+      - name: Create Security PR
+        run: |
+          chmod +x scripts/create-security-pr.sh
+          ./scripts/create-security-pr.sh \
+            --type java \
+            --scan-dir security-results \
+            --reviewers security-team,java-team
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

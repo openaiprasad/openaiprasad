@@ -1,0 +1,72 @@
+{
+  "name": "generic-security-workflow",
+  "version": "1.0.0",
+  "description": "Automated security scanning and remediation workflow for any project",
+  "main": "setup-security-workflow.sh",
+  "scripts": {
+    "setup": "./setup-security-workflow.sh",
+    "validate": "./validate-security-setup.sh",
+    "test": "./validate-security-setup.sh --verbose"
+  },
+  "keywords": [
+    "security",
+    "automation",
+    "vulnerability-scanning",
+    "devsecops",
+    "github-actions",
+    "trivy",
+    "snyk",
+    "owasp"
+  ],
+  "author": "Security Workflows Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/security-workflows/generic.git"
+  },
+  "bugs": {
+    "url": "https://github.com/security-workflows/generic/issues"
+  },
+  "homepage": "https://github.com/security-workflows/generic#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
+  "files": [
+    "setup-security-workflow.sh",
+    "validate-security-setup.sh",
+    "security-config.yml",
+    "templates/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "shellcheck": "^0.8.0",
+    "yamllint": "^1.28.0"
+  },
+  "config": {
+    "supported_languages": [
+      "java",
+      "python",
+      "nodejs",
+      "go",
+      "dotnet",
+      "ruby",
+      "php"
+    ],
+    "security_tools": [
+      "trivy",
+      "snyk",
+      "owasp",
+      "bandit",
+      "eslint-security",
+      "gosec",
+      "semgrep"
+    ]
+  }
+}
