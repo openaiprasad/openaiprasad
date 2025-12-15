@@ -231,7 +231,7 @@ jobs:
     
     steps:
       - name: Send Slack Notification
-        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        continue-on-error: true
         uses: 8398a7/action-slack@v3
         with:
           status: custom
