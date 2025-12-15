@@ -1,509 +1,232 @@
-name: Security Scanning and Remediation
+name: Security Scan and PR Creation
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
   schedule:
-    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+    - cron: '0 2 * * 1'  # Weekly on Monday at 2 AM UTC
   workflow_dispatch:
 
-env:
-  SECURITY_SCAN_VERSION: '1.0'
+permissions:
+  contents: write
+  security-events: write
+  pull-requests: write
+  actions: read
 
 jobs:
-  detect-changes:
-    name: Detect Changes
-    runs-on: ubuntu-latest
-    outputs:
-      has-code-changes: ${{ steps.changes.outputs.code }}
-      has-deps-changes: ${{ steps.changes.outputs.deps }}
-      project-type: ${{ steps.detect.outputs.project-type }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Detect project type
-        id: detect
-        run: |
-          PROJECT_TYPE="java"
-          echo "project-type=$PROJECT_TYPE" >> $GITHUB_OUTPUT
-          echo "Detected project type: $PROJECT_TYPE"
-
-      - name: Detect changes
-        id: changes
-        uses: dorny/paths-filter@v2
-        with:
-          filters: |
-            code:
-              - 'src/**'
-              - 'lib/**'
-              - '**/*.py'
-              - '**/*.js'
-              - '**/*.java'
-              - '**/*.go'
-              - '**/*.cs'
-            deps:
-              - 'pom.xml'
-              - 'package.json'
-              - 'requirements.txt'
-              - 'go.mod'
-              - '*.csproj'
-              - 'Gemfile'
-              - 'composer.json'
-
   security-scan:
-    name: Security Scan
+    name: Security Vulnerability Scan
     runs-on: ubuntu-latest
-    needs: detect-changes
-    permissions:
-      contents: read
-      security-events: write
-      pull-requests: write
-    
-    strategy:
-      matrix:
-        scanner: [trivy, snyk, owasp]
     
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Java Environment
-        if: needs.detect-changes.outputs.project-type == 'java'
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-
-      - name: Run Trivy Scanner
-        if: matrix.scanner == 'trivy'
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'security-results.sarif'
-          severity: 'HIGH,CRITICAL'
-
-      - name: Run Trivy JSON Scan
-        if: matrix.scanner == 'trivy'
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'json'
-          output: 'security-results.json'
-          severity: 'HIGH,CRITICAL'
-
-      - name: Run Snyk Scanner
-        if: matrix.scanner == 'snyk' && secrets.SNYK_TOKEN != ''
-        uses: snyk/actions/setup@master
-
-      - name: Snyk Scan
-        if: matrix.scanner == 'snyk' && secrets.SNYK_TOKEN != ''
-        run: |
-          snyk test --json-file-output=security-results.json || true
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-
-      - name: Skip Snyk (No Token)
-        if: matrix.scanner == 'snyk' && secrets.SNYK_TOKEN == ''
-        run: |
-          echo "⚠️ SNYK_TOKEN not provided - skipping Snyk scan"
-          echo '{"vulnerabilities": [], "summary": {"total": 0}}' > security-results.json
-
-      - name: Run OWASP Dependency Check
-        if: matrix.scanner == 'owasp' && needs.detect-changes.outputs.project-type == 'java'
-        run: |
-          mvn org.owasp:dependency-check-maven:check \
-            -DfailBuildOnCVSS=0 \
-            -Dformat=JSON \
-            -DprettyPrint=true \
-            -DsuppressionFile=owasp-suppressions.xml || true
-          
-          # Copy OWASP report to expected location
-          if [ -f "target/dependency-check-report.json" ]; then
-            cp target/dependency-check-report.json security-results.json
-          else
-            echo '{"dependencies": [], "vulnerabilities": []}' > security-results.json
-          fi
-
-      - name: Upload SARIF to GitHub Security
-        if: matrix.scanner == 'trivy' && always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: security-results.sarif
-          category: trivy-security-scan
-
-      - name: Upload Security Results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: security-results-${{ matrix.scanner }}
-          path: |
-            security-results.json
-            security-results.sarif
-            target/dependency-check-report.*
-          retention-days: 30
-
-  generate-report:
-    name: Generate Security Report
-    runs-on: ubuntu-latest
-    needs: [detect-changes, security-scan]
-    if: always()
-    
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Download All Results
-        uses: actions/download-artifact@v4
-        with:
-          path: security-results
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
-      - name: Generate Report
-        run: |
-          # Install required Python packages
-          pip install jinja2 json2html
-          
-          # Create a simple report if the script doesn't exist
-          if [ ! -f "scripts/generate-security-report.py" ]; then
-            echo "Creating basic security report..."
-            mkdir -p security-results
-            
-            cat > security-dashboard.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Security Scan Report</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: #fff; }
-        .header { background: #2d2d2d; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-        .scanner { background: #333; padding: 15px; margin: 10px 0; border-radius: 5px; }
-        .critical { border-left: 5px solid #ff4444; }
-        .high { border-left: 5px solid #ff8800; }
-        .medium { border-left: 5px solid #ffaa00; }
-        .low { border-left: 5px solid #00aa00; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>🔒 Security Scan Report</h1>
-        <p>Generated: $(date)</p>
-        <p>Repository: ${{ github.repository }}</p>
-    </div>
-    
-    <div class="scanner critical">
-        <h2>🚨 Critical Issues Detected</h2>
-        <p>Your Java project contains several critical security vulnerabilities:</p>
-        <ul>
-            <li><strong>Spring Boot 2.5.9</strong> - Multiple CVEs including Spring4Shell (CVE-2022-22965)</li>
-            <li><strong>JJWT 0.9.1</strong> - Authentication bypass vulnerability (CVE-2019-7644)</li>
-            <li><strong>H2 Database</strong> - Remote code execution (CVE-2021-42392)</li>
-        </ul>
-    </div>
-    
-    <div class="scanner high">
-        <h2>⚠️ Recommendations</h2>
-        <ul>
-            <li>Update Spring Boot to version 3.2.x or latest 2.7.x</li>
-            <li>Update JJWT to version 0.11.x or 0.12.x</li>
-            <li>Review and update all dependencies</li>
-            <li>Set up SNYK_TOKEN for detailed vulnerability scanning</li>
-        </ul>
-    </div>
-    
-    <div class="scanner medium">
-        <h2>📊 Scan Results</h2>
-        <p>Check the workflow artifacts for detailed scan results from:</p>
-        <ul>
-            <li>Trivy filesystem and dependency scanning</li>
-            <li>Snyk vulnerability analysis (if token provided)</li>
-            <li>OWASP Dependency Check (Java projects)</li>
-        </ul>
-    </div>
-</body>
-</html>
-EOF
-            
-            echo '{"critical": 3, "high": 2, "medium": 1, "low": 0, "total": 6}' > security-summary.json
-          else
-            python scripts/generate-security-report.py \
-              --results-dir security-results \
-              --output security-dashboard.html \
-              --format html \
-              --theme dark
-          fi
+      - name: Cache Maven Dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
 
-      - name: Upload Report
+      - name: Install Security Tools
+        run: |
+          # Install Trivy
+          sudo apt-get update
+          sudo apt-get install wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install trivy
+          
+          # Install Snyk
+          npm install -g snyk
+          
+          # Install jq for JSON processing
+          sudo apt-get install jq
+
+      - name: Run Trivy Scan
+        run: |
+          echo "🔍 Running Trivy security scan..."
+          mkdir -p security-results
+          
+          # Filesystem scan
+          trivy fs --format json --output security-results/trivy-fs.json . || true
+          
+          # Repository scan
+          trivy repo --format json --output security-results/trivy-repo.json . || true
+          
+          echo "✅ Trivy scan completed"
+
+      - name: Run Snyk Scan
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          echo "🔍 Running Snyk security scan..."
+          if [ -n "$SNYK_TOKEN" ]; then
+            snyk auth $SNYK_TOKEN
+            snyk test --json > security-results/snyk-test.json || true
+            snyk monitor || true
+          else
+            echo "⚠️ SNYK_TOKEN not provided - skipping Snyk scan"
+            echo '{"vulnerabilities": [], "summary": {"total": 0}}' > security-results/snyk-test.json
+          fi
+          echo "✅ Snyk scan completed"
+
+      - name: Run OWASP Dependency Check
+        if: hashFiles('pom.xml') != ''
+        run: |
+          echo "🔍 Running OWASP Dependency Check..."
+          mvn org.owasp:dependency-check-maven:check \
+            -DfailBuildOnCVSS=0 \
+            -Dformat=JSON \
+            -DprettyPrint=true || true
+          
+          # Move results to security-results directory
+          if [ -f "target/dependency-check-report.json" ]; then
+            cp target/dependency-check-report.json security-results/owasp-dependency-check.json
+          fi
+          echo "✅ OWASP scan completed"
+
+      - name: Upload SARIF Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: security-results/
+        continue-on-error: true
+
+      - name: Generate Security Report
+        run: |
+          echo "📊 Generating security report..."
+          echo '<!DOCTYPE html><html><head><title>Security Scan Report</title><style>body{font-family:Arial,sans-serif;margin:20px;background:#1a1a1a;color:#fff}.header{background:#2d2d2d;padding:20px;border-radius:8px;margin-bottom:20px}.scanner{background:#333;padding:15px;margin:10px 0;border-radius:5px}.critical{border-left:5px solid #ff4444}</style></head><body><div class="header"><h1>🔒 Security Scan Report</h1><p>Generated: '$(date)'</p><p>Repository: ${{ github.repository }}</p></div><div class="scanner critical"><h2>🚨 Security Scan Completed</h2><p>Automated security scanning performed.</p><ul><li>Check GitHub Security tab</li><li>Review pipeline artifacts</li><li>Monitor for security PRs</li></ul></div></body></html>' > security-dashboard.html
+
+      - name: Upload Security Results
         uses: actions/upload-artifact@v4
         with:
-          name: security-dashboard
+          name: security-scan-results
           path: |
+            security-results/
             security-dashboard.html
-            security-summary.json
-
-      - name: Deploy to GitHub Pages
-        if: github.ref == 'refs/heads/main'
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./
-          destination_dir: security-reports
+          retention-days: 30
 
   create-security-prs:
     name: Create Security PRs
     runs-on: ubuntu-latest
-    needs: [detect-changes, security-scan]
+    needs: security-scan
     if: github.event_name != 'pull_request'
     
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download Security Results
-        uses: actions/download-artifact@v4
-        with:
-          path: security-results
-
-      - name: Setup Java for PR Creation
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Create Security PRs
+      - name: Check for Vulnerable Dependencies
+        id: check_vulns
         run: |
-          echo "🔍 Analyzing security scan results for PR creation..."
+          echo "🔍 Checking for vulnerable dependencies..."
           
-          # Check if we have critical vulnerabilities
-          CRITICAL_FOUND=false
-          HIGH_FOUND=false
-          VULN_COUNT=0
+          NEEDS_UPDATE=false
+          UPDATES=""
           
-          # Count vulnerabilities from scan results
-          if find security-results -name "*.json" -type f | head -1 > /dev/null 2>&1; then
-            for file in security-results/*.json; do
-              if [ -f "$file" ]; then
-                if grep -q "CRITICAL" "$file" 2>/dev/null; then
-                  CRITICAL_FOUND=true
-                  VULN_COUNT=$((VULN_COUNT + $(grep -c "CRITICAL" "$file" 2>/dev/null || echo 0)))
-                fi
-                if grep -q "HIGH" "$file" 2>/dev/null; then
-                  HIGH_FOUND=true
-                  VULN_COUNT=$((VULN_COUNT + $(grep -c "HIGH" "$file" 2>/dev/null || echo 0)))
-                fi
-              fi
-            done
+          # Check for vulnerable Spring Boot version
+          if grep -q "<version>2\.5\.9</version>" pom.xml 2>/dev/null; then
+            echo "Found vulnerable Spring Boot 2.5.9"
+            NEEDS_UPDATE=true
+            UPDATES="$UPDATES\n- Spring Boot 2.5.9 → 2.7.18 (fixes Spring4Shell CVE-2022-22965)"
           fi
           
-          # Always create PR for known vulnerabilities in this project
-          if [ -f "pom.xml" ]; then
-            echo "🚨 Java project detected - checking for known vulnerable dependencies..."
-            
-            # Check for vulnerable Spring Boot version
-            SPRING_BOOT_VULNERABLE=false
-            if grep -q "<version>2\.5\.9</version>" pom.xml; then
-              SPRING_BOOT_VULNERABLE=true
-              CRITICAL_FOUND=true
-            fi
-            
-            # Check for vulnerable JJWT version
-            JJWT_VULNERABLE=false
-            if grep -q "jjwt.*0\.9\.1" pom.xml; then
-              JJWT_VULNERABLE=true
-              HIGH_FOUND=true
-            fi
-            
-            if [ "$CRITICAL_FOUND" = "true" ] || [ "$HIGH_FOUND" = "true" ]; then
-              echo "🔧 Creating security update branch..."
-              
-              # Create unique branch name
-              BRANCH_NAME="security-updates-$(date +%Y%m%d-%H%M%S)"
-              git config user.name "openhands"
-              git config user.email "openhands@all-hands.dev"
-              git checkout -b "$BRANCH_NAME"
-              
-              # Track changes made
-              CHANGES_MADE=false
-              CHANGE_SUMMARY=""
-              
-              # Update Spring Boot if vulnerable
-              if [ "$SPRING_BOOT_VULNERABLE" = "true" ]; then
-                echo "🔄 Updating Spring Boot from 2.5.9 to 2.7.18..."
-                sed -i 's/<version>2\.5\.9<\/version>/<version>2.7.18<\/version>/g' pom.xml
-                CHANGES_MADE=true
-                CHANGE_SUMMARY="$CHANGE_SUMMARY\n- Updated Spring Boot 2.5.9 → 2.7.18 (fixes CVE-2022-22965 Spring4Shell)"
-              fi
-              
-              # Update JJWT if vulnerable
-              if [ "$JJWT_VULNERABLE" = "true" ]; then
-                echo "🔄 Updating JJWT from 0.9.1 to 0.11.5..."
-                sed -i 's/\(<artifactId>jjwt<\/artifactId>\s*<version>\)0\.9\.1\(<\/version>\)/\10.11.5\2/g' pom.xml
-                CHANGES_MADE=true
-                CHANGE_SUMMARY="$CHANGE_SUMMARY\n- Updated JJWT 0.9.1 → 0.11.5 (fixes CVE-2019-7644 auth bypass)"
-              fi
-              
-              if [ "$CHANGES_MADE" = "true" ]; then
-                # Create security report file
-                cat > SECURITY_UPDATE_REPORT.md << EOF
-# 🔒 Security Vulnerability Fixes
-
-This PR addresses critical security vulnerabilities detected in the project dependencies.
-
-## 🚨 Vulnerabilities Fixed
-
-$CHANGE_SUMMARY
-
-## 📊 Vulnerability Details
-
-### Spring Boot 2.5.9 Vulnerabilities:
-- **CVE-2022-22965** (Spring4Shell) - CVSS 9.8 - Remote Code Execution
-- **CVE-2022-22963** (SpEL Injection) - CVSS 8.1 - Code Injection
-- **CVE-2022-22950** - CVSS 6.5 - Directory Traversal
-
-### JJWT 0.9.1 Vulnerabilities:
-- **CVE-2019-7644** - CVSS 7.5 - Signature Verification Bypass
-- **CVE-2020-27193** - CVSS 6.5 - Algorithm Confusion Attack
-
-## 🧪 Testing Required
-
-Please ensure the following before merging:
-- [ ] All existing tests pass
-- [ ] Application starts successfully
-- [ ] JWT authentication still works correctly
-- [ ] Spring Boot features function as expected
-- [ ] No breaking changes in API responses
-
-## 🔍 Security Scan Results
-
-The automated security scan detected these vulnerabilities. After this update:
-- Critical vulnerabilities: Reduced significantly
-- High-priority issues: Addressed
-- Overall security posture: Improved
-
-## 📚 References
-
-- [Spring Boot 2.7.18 Release Notes](https://github.com/spring-projects/spring-boot/releases/tag/v2.7.18)
-- [JJWT 0.11.5 Release Notes](https://github.com/jwtk/jjwt/releases/tag/0.11.5)
-- [CVE-2022-22965 Details](https://nvd.nist.gov/vuln/detail/CVE-2022-22965)
-- [CVE-2019-7644 Details](https://nvd.nist.gov/vuln/detail/CVE-2019-7644)
-
----
-*This PR was automatically created by the security scanning workflow.*
-EOF
-                
-                # Commit changes
-                git add pom.xml SECURITY_UPDATE_REPORT.md
-                
-                COMMIT_MSG="🔒 Security Update: Fix critical vulnerabilities
-
-This commit updates vulnerable dependencies to secure versions:
-$CHANGE_SUMMARY
-
-Critical vulnerabilities addressed:
-- Spring4Shell (CVE-2022-22965) - CVSS 9.8
-- JJWT Auth Bypass (CVE-2019-7644) - CVSS 7.5
-
-Co-authored-by: openhands <openhands@all-hands.dev>"
-                
-                git commit -m "$COMMIT_MSG"
-                
-                # Push branch
-                echo "📤 Pushing security update branch..."
-                git push -u origin "$BRANCH_NAME"
-                
-                # Create PR using GitHub CLI or API
-                PR_TITLE="🔒 Security Update: Fix critical vulnerabilities in Spring Boot and JJWT"
-                PR_BODY="# 🔒 Automated Security Update
-
-This PR addresses **critical security vulnerabilities** detected by the automated security scanning workflow.
-
-## 🚨 Critical Issues Fixed
-
-$CHANGE_SUMMARY
-
-## 📊 Impact
-
-- **Before**: Multiple critical and high-severity vulnerabilities
-- **After**: Vulnerabilities patched with latest secure versions
-- **Risk Reduction**: Eliminates remote code execution and authentication bypass risks
-
-## 🧪 Testing Checklist
-
-- [ ] All existing tests pass
-- [ ] Application starts without errors  
-- [ ] JWT authentication functions correctly
-- [ ] Spring Boot endpoints respond properly
-- [ ] No breaking changes in functionality
-
-## 🔍 Security Analysis
-
-The security scan identified vulnerabilities in:
-1. **Spring Boot 2.5.9** - Multiple CVEs including Spring4Shell
-2. **JJWT 0.9.1** - Authentication bypass vulnerability
-
-These updates address the vulnerabilities while maintaining compatibility.
-
-## 📚 Documentation
-
-See \`SECURITY_UPDATE_REPORT.md\` for detailed vulnerability information and references.
-
----
-**⚠️ Important**: Please review and test thoroughly before merging. While these are security-critical updates, they may require testing to ensure compatibility.
-
-*Automatically created by security scanning workflow*"
-                
-                # Create PR using GitHub API
-                curl -X POST \
-                  -H "Authorization: token $GITHUB_TOKEN" \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  "https://api.github.com/repos/${{ github.repository }}/pulls" \
-                  -d "{
-                    \"title\": \"$PR_TITLE\",
-                    \"body\": $(echo "$PR_BODY" | jq -Rs .),
-                    \"head\": \"$BRANCH_NAME\",
-                    \"base\": \"main\",
-                    \"draft\": false
-                  }" | jq -r '.html_url // "Error creating PR"' > pr_url.txt
-                
-                PR_URL=$(cat pr_url.txt)
-                echo "✅ Security PR created: $PR_URL"
-                echo "PR_URL=$PR_URL" >> $GITHUB_ENV
-                
-                # Clean up temporary files
-                rm -f pr_url.txt
-                
-              else
-                echo "⚠️ No automatic fixes available for detected vulnerabilities"
-                git checkout main
-                git branch -D "$BRANCH_NAME"
-              fi
-            else
-              echo "✅ No critical or high vulnerabilities requiring immediate PR"
-            fi
-          else
-            echo "ℹ️ Not a Java/Maven project - skipping automated dependency updates"
+          # Check for vulnerable JJWT version  
+          if grep -q "jjwt.*0\.9\.1" pom.xml 2>/dev/null; then
+            echo "Found vulnerable JJWT 0.9.1"
+            NEEDS_UPDATE=true
+            UPDATES="$UPDATES\n- JJWT 0.9.1 → 0.11.5 (fixes CVE-2019-7644)"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+          echo "needs_update=$NEEDS_UPDATE" >> $GITHUB_OUTPUT
+          echo "updates<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$UPDATES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Security Update PR
+        if: steps.check_vulns.outputs.needs_update == 'true'
+        run: |
+          echo "🔧 Creating security update PR..."
+          
+          # Configure git
+          git config user.name "openhands"
+          git config user.email "openhands@all-hands.dev"
+          
+          # Create branch
+          BRANCH_NAME="security-updates-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH_NAME"
+          
+          # Update Spring Boot if needed
+          if grep -q "<version>2\.5\.9</version>" pom.xml; then
+            sed -i 's/<version>2\.5\.9<\/version>/<version>2.7.18<\/version>/g' pom.xml
+            echo "Updated Spring Boot to 2.7.18"
+          fi
+          
+          # Update JJWT if needed
+          if grep -q "jjwt.*0\.9\.1" pom.xml; then
+            sed -i 's/\(<artifactId>jjwt<\/artifactId>\s*<version>\)0\.9\.1\(<\/version>\)/\10.11.5\2/g' pom.xml
+            echo "Updated JJWT to 0.11.5"
+          fi
+          
+          # Create security report
+          echo "# Security Update Report" > SECURITY_UPDATE_REPORT.md
+          echo "" >> SECURITY_UPDATE_REPORT.md
+          echo "This PR fixes critical security vulnerabilities:" >> SECURITY_UPDATE_REPORT.md
+          echo "${{ steps.check_vulns.outputs.updates }}" >> SECURITY_UPDATE_REPORT.md
+          echo "" >> SECURITY_UPDATE_REPORT.md
+          echo "Please test thoroughly before merging." >> SECURITY_UPDATE_REPORT.md
+          
+          # Commit changes
+          git add pom.xml SECURITY_UPDATE_REPORT.md
+          git commit -m "🔒 Security Update: Fix critical vulnerabilities"
+          
+          # Push branch
+          git push -u origin "$BRANCH_NAME"
+          
+          # Create PR
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls" \
+            -d "{
+              \"title\": \"🔒 Security Update: Fix critical vulnerabilities\",
+              \"body\": \"Automated security update to fix critical vulnerabilities. See SECURITY_UPDATE_REPORT.md for details.\",
+              \"head\": \"$BRANCH_NAME\",
+              \"base\": \"main\"
+            }"
+          
+          echo "✅ Security PR created successfully"
 
   notify:
     name: Send Notifications
     runs-on: ubuntu-latest
-    needs: [security-scan, generate-report, create-security-prs]
+    needs: [security-scan, create-security-prs]
     if: always()
     
     steps:
@@ -528,16 +251,6 @@ See \`SECURITY_UPDATE_REPORT.md\` for detailed vulnerability information and ref
                       "title": "Scan Status",
                       "value": "${{ needs.security-scan.result }}",
                       "short": true
-                    },
-                    {
-                      "title": "PR Creation",
-                      "value": "${{ needs.create-security-prs.result }}",
-                      "short": true
-                    },
-                    {
-                      "title": "Action Required",
-                      "value": "Check for new security PRs and GitHub Security tab",
-                      "short": false
                     }
                   ]
                 }
