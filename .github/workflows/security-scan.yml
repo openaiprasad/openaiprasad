@@ -241,37 +241,36 @@ jobs:
     
     steps:
       - name: Send Slack Notification
-        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
         continue-on-error: true
-        uses: 8398a7/action-slack@v3
-        with:
-          status: custom
-          custom_payload: |
-            {
-              "text": "🔒 Security Scan & PR Creation Completed",
-              "attachments": [
-                {
-                  "color": "${{ needs.security-scan.result == 'success' && 'good' || 'danger' }}",
-                  "fields": [
-                    {
-                      "title": "Repository",
-                      "value": "${{ github.repository }}",
-                      "short": true
-                    },
-                    {
-                      "title": "Scan Status",
-                      "value": "${{ needs.security-scan.result }}",
-                      "short": true
-                    }
-                  ]
-                }
-              ]
-            }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          
-      - name: Slack Notification Status
-        if: ${{ secrets.SLACK_WEBHOOK_URL == '' }}
         run: |
-          echo "ℹ️ Slack notifications are disabled (SLACK_WEBHOOK_URL not configured)"
-          echo "To enable Slack notifications, add SLACK_WEBHOOK_URL to your repository secrets"
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            echo "📢 Sending Slack notification..."
+            curl -X POST -H 'Content-type: application/json' \
+              --data '{
+                "text": "🔒 Security Scan & PR Creation Completed",
+                "attachments": [
+                  {
+                    "color": "${{ needs.security-scan.result == 'success' && 'good' || 'danger' }}",
+                    "fields": [
+                      {
+                        "title": "Repository",
+                        "value": "${{ github.repository }}",
+                        "short": true
+                      },
+                      {
+                        "title": "Scan Status", 
+                        "value": "${{ needs.security-scan.result }}",
+                        "short": true
+                      }
+                    ]
+                  }
+                ]
+              }' \
+              "$SLACK_WEBHOOK_URL"
+            echo "✅ Slack notification sent"
+          else
+            echo "ℹ️ Slack notifications are disabled (SLACK_WEBHOOK_URL not configured)"
+            echo "To enable Slack notifications, add SLACK_WEBHOOK_URL to your repository secrets"
+          fi
