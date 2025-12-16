@@ -65,11 +65,17 @@ jobs:
           echo "🔍 Running Trivy security scan..."
           mkdir -p security-results
           
-          # Filesystem scan
+          # Filesystem scan - JSON format
           trivy fs --format json --output security-results/trivy-fs.json . || true
           
-          # Repository scan
+          # Filesystem scan - SARIF format for GitHub Security tab
+          trivy fs --format sarif --output security-results/trivy-fs.sarif . || true
+          
+          # Repository scan - JSON format
           trivy repo --format json --output security-results/trivy-repo.json . || true
+          
+          # Repository scan - SARIF format for GitHub Security tab
+          trivy repo --format sarif --output security-results/trivy-repo.sarif . || true
           
           echo "✅ Trivy scan completed"
 
@@ -80,11 +86,15 @@ jobs:
           echo "🔍 Running Snyk security scan..."
           if [ -n "$SNYK_TOKEN" ]; then
             snyk auth $SNYK_TOKEN
+            # JSON format for reporting
             snyk test --json > security-results/snyk-test.json || true
+            # SARIF format for GitHub Security tab
+            snyk test --sarif > security-results/snyk-test.sarif || true
             snyk monitor || true
           else
             echo "⚠️ SNYK_TOKEN not provided - skipping Snyk scan"
             echo '{"vulnerabilities": [], "summary": {"total": 0}}' > security-results/snyk-test.json
+            echo '{"version": "2.1.0", "runs": [{"tool": {"driver": {"name": "Snyk"}}, "results": []}]}' > security-results/snyk-test.sarif
           fi
           echo "✅ Snyk scan completed"
 
@@ -104,7 +114,7 @@ jobs:
           echo "✅ OWASP scan completed"
 
       - name: Upload SARIF Results
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: security-results/
@@ -231,6 +241,7 @@ jobs:
     
     steps:
       - name: Send Slack Notification
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
         continue-on-error: true
         uses: 8398a7/action-slack@v3
         with:
@@ -258,3 +269,9 @@ jobs:
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          
+      - name: Slack Notification Status
+        if: ${{ secrets.SLACK_WEBHOOK_URL == '' }}
+        run: |
+          echo "ℹ️ Slack notifications are disabled (SLACK_WEBHOOK_URL not configured)"
+          echo "To enable Slack notifications, add SLACK_WEBHOOK_URL to your repository secrets"
